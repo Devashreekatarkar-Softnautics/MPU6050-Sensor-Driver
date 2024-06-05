@@ -25,7 +25,7 @@ volatile int etx_value = 0;
 
 struct kobject *kobj_ref;
 static struct work_struct mpu_work;
-
+/*_adapter represents a bus and _client represents the slave */ 
 static struct i2c_adapter *mpu6050_adapter = NULL;  
 static struct i2c_client  *mpu6050_sensor = NULL;  
 static struct proc_dir_entry *pd_entry;
@@ -62,8 +62,10 @@ static const struct i2c_device_id mpu6050_id[] = {
 	{ }
 };
 
+// This function is used to expose the driver along with its I2C Device table IDs to userspace
 MODULE_DEVICE_TABLE(i2c, mpu6050_id);
 
+/* Initializes the required field of this structure and use that information for initializing the dev */
 static struct i2c_board_info I2C_MPU6050 = {
 	I2C_BOARD_INFO(SLAVE_DEVICE_NAME, MPU6050_SLAVE_ADDR),
 };
@@ -111,12 +113,12 @@ static struct file_operations fops = {
 
 static ssize_t procfile_read(struct file* filp, char *buf, size_t count, loff_t *offp)
 {
-	
+
 	int ret = 0;
 	char tmp[1000] = { 0 };
 
 	printk(KERN_INFO "PROFS READ FUNCTION CALLED %s\n", PROCFS_NAME);
-	
+
 	if(*offp > 0)
 	{
 		return 0;
@@ -134,7 +136,7 @@ static ssize_t procfile_read(struct file* filp, char *buf, size_t count, loff_t 
 		printk(KERN_ERR "Error in copy to user\n");
 		return -EFAULT;
 	}
-	
+
 	ret = *offp = strlen(tmp);
 	return ret;
 }
@@ -185,12 +187,12 @@ static void mpu6050_work_func(struct work_struct *work)
 	accel_z = (s16)(Z_data_H << 8 | Z_data_L);
 
 
-		accel_x /= 16384;
-		accel_y /= 16384;
-		accel_z /= 16384;
+	//		accel_x /= 16384;
+	//		accel_y /= 16384;
+	//		accel_z /= 16384;
 
 	pr_info("Accel X: %d, Y: %d, Z: %d\n", accel_x,  accel_y, accel_z);
-	msleep(1000); 
+	msleep(250); 
 	return;
 }
 
@@ -276,10 +278,10 @@ static int mpu6050_probe(struct i2c_client *client)
 		pr_err("GPIO PIN REQUEST FAILED\n");
 		return -1;
 	}
-	
+
 	/* Direction set to input to read the data interrupt triggers from the sensor */
 	gpio_direction_input(GPIO_25);
-	
+
 	/* _WORK : Creates the workqueue in the linux w name mpu_work and 2 nd arg is the function to be scheduled 
 	 * 	   in the workqueue */
 	INIT_WORK(&mpu_work, mpu6050_work_func);
@@ -369,18 +371,20 @@ static int __init sensor_driver_init(void)
 	}
 
 	pd_entry = proc_create(PROCFS_NAME, 0, NULL, &proc_fops);
-	
+
 	if(pd_entry == NULL) {
 		remove_proc_entry(PROCFS_NAME, NULL);
 		printk(KERN_ERR "Could not initialize /proc/%s\n", PROCFS_NAME);
 		return -ENOMEM;
 	}
-
+	// The adapter structure is used to identify a physical i2c bus 
 	mpu6050_adapter = i2c_get_adapter(I2C_BUS_AVAILABLE);
 
 	if (mpu6050_adapter != NULL) {
+		/* The below functions instantiates the device from I2C bus */
 		mpu6050_sensor = i2c_new_client_device(mpu6050_adapter, &I2C_MPU6050);
 		if (mpu6050_sensor != NULL) {
+			/* _driver Structure is added to i2c subsystem */
 			i2c_add_driver(&mpu6050_driver);
 			ret = 0;
 		}
