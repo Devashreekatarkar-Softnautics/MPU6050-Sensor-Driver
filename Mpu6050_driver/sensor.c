@@ -169,23 +169,12 @@ static ssize_t sysfs_store(struct kobject *kobj, struct kobj_attribute *attr,con
 
 static void mpu6050_work_func(struct work_struct *work)
 {
+
 	s16 accel_x,accel_y,accel_z;
-	u8 X_data_H, X_data_L, Y_data_H, Y_data_L, Z_data_H, Z_data_L;
 
-	X_data_H = i2c_smbus_read_byte_data(mpu6050_sensor, X_ACC_H);    
-	X_data_L = i2c_smbus_read_byte_data(mpu6050_sensor, X_ACC_L);
-
-	Y_data_H = i2c_smbus_read_byte_data(mpu6050_sensor, Y_ACC_H);    
-	Y_data_L = i2c_smbus_read_byte_data(mpu6050_sensor, Y_ACC_L);    
-
-	Z_data_H = i2c_smbus_read_byte_data(mpu6050_sensor, Z_ACC_H);    
-	Z_data_L = i2c_smbus_read_byte_data(mpu6050_sensor, Z_ACC_L);    
-
-
-	accel_x = (s16)(X_data_H << 8 | X_data_L);
-	accel_y = (s16)(Y_data_H << 8 | Y_data_L);
-	accel_z = (s16)(Z_data_H << 8 | Z_data_L);
-
+	accel_x = ACCEL_READ(mpu6050_sensor,X_ACC_H);
+	accel_y = ACCEL_READ(mpu6050_sensor,Y_ACC_H);
+	accel_z = ACCEL_READ(mpu6050_sensor,Z_ACC_H);
 
 	//		accel_x /= 16384;
 	//		accel_y /= 16384;
@@ -398,19 +387,16 @@ static int __init sensor_driver_init(void)
 	return ret;
 
 r_sysfs:
-	ret = -1;
 	kobject_put(kobj_ref); 
 	sysfs_remove_file(kernel_kobj, &etx_attr.attr);
 r_device:
-	ret = -1;
 	device_destroy(sensor_class,dev);
 r_class:
-	ret = -1;
 	class_destroy(sensor_class);
 r_del:
-	ret = -1;
 	cdev_del(&sensor_dev);
-
+	
+	ret = -1;
 	return ret;
 }
 
@@ -422,8 +408,6 @@ static void __exit sensor_driver_exit(void)
 
 	gpio_free(GPIO_25);
 	free_irq(irqnum, NULL);
-	//flush_workqueue(wq);	
-	//destroy_workqueue(wq);	
 	flush_work(&mpu_work);
 
 	kobject_put(kobj_ref); 
@@ -467,25 +451,13 @@ static long SENSOR_IOCTL(struct file *file, unsigned int cmd, unsigned long arg)
 {
 
 	s16 accel[3];
-	u8 X_data_H, X_data_L, Y_data_H, Y_data_L, Z_data_H, Z_data_L;
 
-	X_data_H = i2c_smbus_read_byte_data(mpu6050_sensor, X_ACC_H);    
-	X_data_L = i2c_smbus_read_byte_data(mpu6050_sensor, X_ACC_L);
-
-	Y_data_H = i2c_smbus_read_byte_data(mpu6050_sensor, Y_ACC_H);    
-	Y_data_L = i2c_smbus_read_byte_data(mpu6050_sensor, Y_ACC_L);    
-
-	Z_data_H = i2c_smbus_read_byte_data(mpu6050_sensor, Z_ACC_H);    
-	Z_data_L = i2c_smbus_read_byte_data(mpu6050_sensor, Z_ACC_L);    
-
-
-	accel[0] = (s16)(X_data_H << 8 | X_data_L);
-	accel[1] = (s16)(Y_data_H << 8 | Y_data_L);
-	accel[2] = (s16)(Z_data_H << 8 | Z_data_L);
+	accel[0] = ACCEL_READ(mpu6050_sensor,X_ACC_H);
+	accel[1] = ACCEL_READ(mpu6050_sensor,Y_ACC_H);
+	accel[2] = ACCEL_READ(mpu6050_sensor,Z_ACC_H);
 
 	pr_info("IOCTL FUNCTION CALLED\n");
 	for(int i = 0; i < 3; i++){
-
 		value[i] = accel[i];
 		if(copy_to_user((int32_t*) arg, &value, sizeof(value)) != 0) {
 			printk(KERN_ERR "Writing data to user failed\n");
