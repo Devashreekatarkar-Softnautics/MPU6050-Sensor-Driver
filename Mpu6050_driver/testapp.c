@@ -7,9 +7,8 @@
 #include <unistd.h>
 #include <sys/ioctl.h>
 
-#define WR_VALUE _IOW('a', 'a', int32_t*)
 #define RD_VALUE _IOR('a', 'b', int32_t*)
-int glob_var;
+
 int main()
 {
 	int fd;
@@ -33,6 +32,7 @@ int main()
 	for(int i = 0; i < 3; i++){
 		val[i] = value[i];
 		val[i] /= 16384.0;
+		val[i] *= 9.8;
 	}
 
 	printf("X: %lf Y: %lf Z: %lf \n", val[0],val[1],val[2]);

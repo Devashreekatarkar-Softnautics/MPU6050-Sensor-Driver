@@ -1,60 +1,70 @@
+// SPDX-License-Identifier: MIT
+/*The header files for the Sensor Driver
+ *======================================
+ *module.h	- Required when writing any kernel module
+ *		Internally includes version.h (Includes def. of _GPL() Function Macro)
+ *uaccess.h	- Included for userspace communication (copy_to_user() & copy_from_user())
+ *err.h		- Included for error handling macros
+ *i2c.h		- Included for i2c protocol implementation
+ *init.h	- Required for module_init and module_exit macros
+ *ioctl.h	- Required for implementing the ioctl interface
+ *kernel.h	- Required for printing information in kernel log buffers
+ *		- Includes types.h header - Contains data types char dev etc
+ *sysfs.h & kobject.h	- Required for creating and initializing sysfs interface
+ *proc_fs	- Required for creating and initializing Procfs interface
+ *gpio.h	- Required for configuring the GPIO's of the PI
+ *fs.h		- Includes structure of file operations
+ */
+
 #include <linux/module.h>
 #include <linux/uaccess.h>
 #include <linux/err.h>
-#include <linux/kdev_t.h>
 #include <linux/init.h>
-#include <linux/slab.h>
 #include <linux/i2c.h>
 #include <linux/ioctl.h>
 #include <linux/delay.h>
 #include <linux/kernel.h>
-#include <linux/kthread.h>
 #include <linux/device.h>
-#include <linux/sched.h>
 #include <linux/sysfs.h>
 #include <linux/kobject.h>
 #include <linux/proc_fs.h>
 #include <linux/interrupt.h>
 #include <linux/gpio.h>
-#include <linux/workqueue.h>
 #include <linux/cdev.h>
 #include <linux/fs.h>
 
-unsigned int irqnum;
-volatile int etx_value = 0;
-
+unsigned int Irq_Num;
+int etx_value;
 struct kobject *kobj_ref;
-static struct work_struct mpu_work;
-/*_adapter represents a bus and _client represents the slave */ 
-static struct i2c_adapter *mpu6050_adapter = NULL;  
-static struct i2c_client  *mpu6050_sensor = NULL;  
+static struct work_struct mpu6050_work;
+
+/*_adapter represents a bus and _client represents the slave*/
+static struct i2c_adapter *mpu6050_adapter;
+static struct i2c_client  *mpu6050_sensor;
 static struct proc_dir_entry *pd_entry;
 
-#define I2C_BUS_AVAILABLE 1              
-#define SLAVE_DEVICE_NAME "MPU6050"          
-#define MPU6050_SLAVE_ADDR 0x68              
-#define MPU6050_PWR1_REG 0x6B              
-#define MPU6050_SMP_RATE 0x19              
-#define MPU6050_CONFIG 0x1A              
-#define MPU6050_INT_EN 0x38             
-#define MPU6050_INT_PIN 0x37              
-#define MPU6050_INT_STATS 0x3A              
-#define GPIO_25 596  
+#define I2C_BUS_AVAILABLE 1
+#define SLAVE_DEVICE_NAME "MPU6050"
+#define MPU6050_SLAVE_ADDR 0x68
+#define MPU6050_PWR1_REG 0x6B
+#define MPU6050_SMP_RATE 0x19
+#define MPU6050_CONFIG 0x1A
+#define MPU6050_INT_EN 0x38
+#define MPU6050_INT_PIN 0x37
+#define MPU6050_INT_STATS 0x3A
+#define GPIO_25 596
 #define PROCFS_NAME "MPU6050_SENSOR"
-
+#define FAILURE -1
+#define SUCCESS  0
 #define DEVICE_NAME "MPU6050"
 #define NUM_DEVICES 1
 #define BUF_LEN 24
-#define WR_VAL _IOW('a', 'a', int32_t *)
 #define RD_VAL _IOR('a', 'b', int32_t *)
 
 /* Acceleration data address reg */
-#define X_ACC_L 0x3C
-#define X_ACC_H 0x3B
-#define Y_ACC_L 0x3E
-#define Y_ACC_H 0x3D
-#define Z_ACC_L 0x40
-#define Z_ACC_H 0x3F
+#define X_ACC 0x3B
+#define Y_ACC 0x3D
+#define Z_ACC 0x3F
 
 
 static const struct i2c_device_id mpu6050_id[] = {
@@ -72,57 +82,51 @@ static struct i2c_board_info I2C_MPU6050 = {
 
 /*************************** Function Prototypes *******************************/
 
-static void mpu6050_work_func(struct work_struct *work);
-static int ACCEL_WRITE(struct i2c_client *client, u8 reg, u8 val);
-static int16_t ACCEL_READ(struct i2c_client *client, u8 reg);
-static irqreturn_t mpu_irq_handler(int irq, void *dev_id);
+static void Mpu6050_Work_Func(struct work_struct *work);
+static int Mpu6050_Write(struct i2c_client *client, u8 reg, u8 val);
+static int16_t Mpu6050_Read(struct i2c_client *client, u8 reg);
+static irqreturn_t Mpu_Irq_Handler(int irq, void *dev_id);
 
 static int chardev_open(struct inode *, struct file *);
 static int chardev_close(struct inode *, struct file *);
-static ssize_t chardev_read(struct file *, char *, size_t, loff_t *);
-static ssize_t chardev_write(struct file *, const char *, size_t, loff_t *);
-static long SENSOR_IOCTL(struct file *, unsigned int , unsigned long );
+static long Sensor_Ioctl(struct file *, unsigned int, unsigned long);
 
 /******************************************************************************/
 
 /*************************** Sysfs functions **********************************/
 
-static ssize_t  sysfs_show(struct kobject *kobj, struct kobj_attribute *attr, 
+static ssize_t  sysfs_show(struct kobject *kobj, struct kobj_attribute *attr,
 		char *buf);
-static ssize_t  sysfs_store(struct kobject *kobj,struct kobj_attribute *attr,
+static ssize_t  sysfs_store(struct kobject *kobj, struct kobj_attribute *attr,
 		const char *buf, size_t count);
 
 struct kobj_attribute etx_attr = __ATTR(etx_value, 0660, sysfs_show, sysfs_store);
 
 /******************************************************************************/
 
-static dev_t dev = 0;
+static dev_t dev;
 static struct cdev sensor_dev;
 static struct class *sensor_class;
-int32_t value[3];	
+int32_t value[3];
 
 static struct file_operations fops = {
 	.owner = THIS_MODULE,
-	.read = chardev_read,
-	.write = chardev_write,
 	.open = chardev_open,
-	.unlocked_ioctl = SENSOR_IOCTL,
-	.release =chardev_close,
+	.unlocked_ioctl = Sensor_Ioctl,
+	.release = chardev_close,
 
 };
 
-static ssize_t procfile_read(struct file* filp, char *buf, size_t count, loff_t *offp)
+static ssize_t Mpu6050_Procfs_Read(struct file *filp, char *buf, size_t count, loff_t *offp)
 {
 
 	int ret = 0;
 	char tmp[1000] = { 0 };
 
-	printk(KERN_INFO "PROFS READ FUNCTION CALLED %s\n", PROCFS_NAME);
+	pr_info("PROFS READ FUNCTION CALLED %s\n", PROCFS_NAME);
 
-	if(*offp > 0)
-	{
+	if (*offp > 0)
 		return 0;
-	}
 
 	sprintf(tmp, "MPU6050 ACCELEROMETER SENSOR PROBED\n"
 			"Operating voltage: 2.375 - 3.46 v\n"
@@ -131,9 +135,8 @@ static ssize_t procfile_read(struct file* filp, char *buf, size_t count, loff_t 
 			"Sample rate: 1KHZ\n"
 			"Data fetched in the form of X-Y-Z axis: Static acceleration (with respect to gravity)\n");
 
-	if(copy_to_user(buf, tmp, strlen(tmp)))
-	{
-		printk(KERN_ERR "Error in copy to user\n");
+	if (copy_to_user(buf, tmp, strlen(tmp))) {
+		pr_info("Error in copy to user\n");
 		return -EFAULT;
 	}
 
@@ -142,121 +145,118 @@ static ssize_t procfile_read(struct file* filp, char *buf, size_t count, loff_t 
 }
 
 static struct proc_ops proc_fops = {
-	.proc_read = procfile_read
+	.proc_read = Mpu6050_Procfs_Read
 };
 
-/*SYSFS Interface - Read write operations corresponding to _show & _store respectively */
+/* SYSFS Interface - Read write operations corresponding to _show & _store respectively */
 static ssize_t sysfs_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
 	pr_info("SYSFS READ FUNCTION\n");
-	s16 accel_x,accel_y,accel_z;
+	s16 accel_x = 0, accel_y = 0, accel_z = 0;
 
-	accel_x = ACCEL_READ(mpu6050_sensor,X_ACC_H);
-	accel_y = ACCEL_READ(mpu6050_sensor,Y_ACC_H);
-	accel_z = ACCEL_READ(mpu6050_sensor,Z_ACC_H);
+	accel_x = Mpu6050_Read(mpu6050_sensor, X_ACC);
+	accel_y = Mpu6050_Read(mpu6050_sensor, Y_ACC);
+	accel_z = Mpu6050_Read(mpu6050_sensor, Z_ACC);
 
-	return sprintf(buf,"X-axis: %d g Y-axis: %d g Z-axis: %d g\n",accel_x,accel_y,accel_z);
+	return sprintf(buf, "X-axis: %d g Y-axis: %d g Z-axis: %d g\n", accel_x, accel_y, accel_z);
 
 }
 
 /* This function will be called when we write the sysfs file */
-static ssize_t sysfs_store(struct kobject *kobj, struct kobj_attribute *attr,const char *buf, size_t count)
+static ssize_t sysfs_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
 {
 	pr_info("SYSFS WRITE FUNCTION\n");
-	sscanf(buf,"%d",&etx_value);
+	int ret_val = sscanf(buf, "%d", &etx_value);
+
+	if (!ret_val) {
+		pr_info("Reading Sensor data into the buffer failed\n");
+		return FAILURE;
+	}
 	return count;
 }
 
-static void mpu6050_work_func(struct work_struct *work)
+static void Mpu6050_Work_Func(struct work_struct *work)
 {
+	s16 accel_x, accel_y, accel_z;
 
-	s16 accel_x,accel_y,accel_z;
-
-	accel_x = ACCEL_READ(mpu6050_sensor,X_ACC_H);
-	accel_y = ACCEL_READ(mpu6050_sensor,Y_ACC_H);
-	accel_z = ACCEL_READ(mpu6050_sensor,Z_ACC_H);
+	accel_x = Mpu6050_Read(mpu6050_sensor, X_ACC);
+	accel_y = Mpu6050_Read(mpu6050_sensor, Y_ACC);
+	accel_z = Mpu6050_Read(mpu6050_sensor, Z_ACC);
 
 	//		accel_x /= 16384;
 	//		accel_y /= 16384;
 	//		accel_z /= 16384;
 
 	pr_info("Accel X: %d, Y: %d, Z: %d\n", accel_x,  accel_y, accel_z);
-	msleep(250); 
-	return;
+//	msleep(0.001);
 }
 
-static int ACCEL_WRITE(struct i2c_client *client, u8 reg, u8 val)
+static int Mpu6050_Write(struct i2c_client *client, u8 reg, u8 val)
 {
 	return i2c_smbus_write_byte_data(client, reg, val);
 }
 
-static int16_t ACCEL_READ(struct i2c_client *client, u8 reg)
+static int16_t Mpu6050_Read(struct i2c_client *client, u8 reg)
 {
-	s16 temp_ax;
-	u8 x_h,x_l;
+	s16 a_x = 0;
+	u8 a_h = 0, a_l = 0;
 
-	x_h = i2c_smbus_read_byte_data(client,reg);
-	x_l = i2c_smbus_read_byte_data(client,reg + 1);
+	a_h = i2c_smbus_read_byte_data(client, reg);
+	a_l = i2c_smbus_read_byte_data(client, reg + 1);
 
-	temp_ax = (s16)(x_h << 8 | x_l);
-	return temp_ax;
+	a_x = (s16)(a_h << 8 | a_l);
+	return a_x;
 }
 
-static irqreturn_t mpu_irq_handler(int irq, void *dev_id) 
+static irqreturn_t Mpu_Irq_Handler(int irq, void *dev_id)
 {
 	/* pr_info("INTERRUPT HANDLER CALLED\n"); */
 	// This function puts the job on the kernel global workqueue
-	schedule_work(&mpu_work);
+	schedule_work(&mpu6050_work);
 	return IRQ_HANDLED;
 }
 
 static int mpu6050_probe(struct i2c_client *client)
 {
-	int ret;
-
-	/* Configuring & Initializing the PWR_MNG REG */
-	ret = ACCEL_WRITE(client, MPU6050_PWR1_REG, 0x00);
-	if (ret < 0) {
+	/*Configuring & Initializing the PWR_MNG REG*/
+	if (Mpu6050_Write(client, MPU6050_PWR1_REG, 0x00) < 0) {
 		dev_err(&client->dev, "Failed to wake up MPU6050\n");
-		return -1;
+		return FAILURE;
 	}
 
-	/* Configure interrupt pin to be active high, push-pull, and enable interrupt 
-	 * LATCH_INT_EN - set to 1, int pin held high until the interrupt is cleared 
-	 * INT_RD_CLEAR - set to 1, INT_STATUS bits are cleared on any read operation */
-
-	ret = ACCEL_WRITE(client, MPU6050_INT_PIN, 0x30); 
-	if (ret < 0) {
+	/*Configure interrupt pin to be active high, push-pull, and enable interrupt
+	 *LATCH_INT_EN - set to 1, int pin held high until the interrupt is cleared
+	 *INT_RD_CLEAR - set to 1, INT_STATUS bits are cleared on any read operation
+	 */
+	if (Mpu6050_Write(client, MPU6050_INT_PIN, 0x30) < 0) {
 		dev_err(&client->dev, "Failed to configure interrupt pin\n");
-		return -1;
+		return FAILURE;
 	}
 
-	/* Enable DATA_READY_INTERRUPT */
-	ret = ACCEL_WRITE(client, MPU6050_INT_EN, 0x01); 
-	if (ret < 0) {
+	/*Enable DATA_READY_INTERRUPT */
+	if (Mpu6050_Write(client, MPU6050_INT_EN, 0x01) < 0) {
 		dev_err(&client->dev, "Failed to enable interrupt\n");
-		return -1;
+		return FAILURE;
 	}
 
-	/* Configure sample rate divider */
-	/*	ret = ACCEL_WRITE(client, MPU6050_SMP_RATE, 0x04); // Set sample rate to 200Hz (1kHz / (4 + 1))
-		if (ret < 0) {
+	/*Configure sample rate divider */
+	if (Mpu6050_Write(client, MPU6050_SMP_RATE, 0x0F) < 0) {
 		dev_err(&client->dev, "Failed to set sample rate\n");
-		return -1;
-		}*/
-
-	/* Configure accelerometer range and bandwidth 
-	 * DLPF BITS CONFIGURED - B.W: 260 HZ & FREQ: 1 KHZ */
-
-	ret = ACCEL_WRITE(client, MPU6050_CONFIG, 0x00); 
-	if (ret < 0) {
-		dev_err(&client->dev, "Failed to configure accelerometer\n");
-		return -1;
+		return FAILURE;
 	}
+
+	/*Configure accelerometer range and bandwidth
+	 *DLPF BITS CONFIGURED - B.W: 260 HZ & FREQ: 1 KHZ
+	 */
+	if (Mpu6050_Write(client, MPU6050_CONFIG, 0x00) < 0) {
+		dev_err(&client->dev, "Failed to configure accelerometer\n");
+		return FAILURE;
+	}
+
 	/* Check and request for the gpio 25 of raspberry pi, connected to INT pin of the sensor */
 	if (!gpio_is_valid(GPIO_25)) {
 		pr_err("GPIO PIN INVALID\n");
-		return -1;
+		return FAILURE;
 	}
 
 	//pr_info("Interrupt GPIO PIN VAL:%d\n", gpio_get_value(GPIO_25));
@@ -265,40 +265,33 @@ static int mpu6050_probe(struct i2c_client *client)
 
 	if (gpio_request(GPIO_25, "GPIO_25") < 0) {
 		pr_err("GPIO PIN REQUEST FAILED\n");
-		return -1;
+		return FAILURE;
 	}
 
 	/* Direction set to input to read the data interrupt triggers from the sensor */
 	gpio_direction_input(GPIO_25);
 
-	/* _WORK : Creates the workqueue in the linux w name mpu_work and 2 nd arg is the function to be scheduled 
-	 * 	   in the workqueue */
-	INIT_WORK(&mpu_work, mpu6050_work_func);
+	/* _WORK : Creates the workqueue in the linux w name mpu6050_work and 2 nd arg is the function to be scheduled
+	 *		in the workqueue
+	 */
+	INIT_WORK(&mpu6050_work, Mpu6050_Work_Func);
 
-	irqnum = gpio_to_irq(GPIO_25);
-	if (irqnum < 0){
+	Irq_Num = gpio_to_irq(GPIO_25);
+	if (!Irq_Num) {
 		dev_err(&mpu6050_sensor->dev, "Failed to get IRQ number for GPIO 25\n");
-		return -1;
+		return FAILURE;
 	}
 
 	/* Attaching the interrupt handler to GPIO PIN 25 ( In raspberry pi PIN 25 --> 596) */
-	ret = request_irq(irqnum,mpu_irq_handler, IRQF_TRIGGER_HIGH, "mpu6050_irq", NULL);
 
-	if (ret) {
+	if (request_irq(Irq_Num, Mpu_Irq_Handler, IRQF_TRIGGER_HIGH, "mpu6050_irq", NULL)) {
 		dev_err(&mpu6050_sensor->dev, "Failed to request IRQ\n");
-		return -1;
+		return FAILURE;
 	}
 
 	pr_info("MPU6050 SENSOR PROBED\n");
-	return 0;
+	return SUCCESS;
 }
-
-static void mpu6050_remove(struct i2c_client *client)
-{
-	pr_info("MPU6050 SENSOR REMOVED\n");
-	return;
-}
-
 
 static struct i2c_driver mpu6050_driver = {
 
@@ -306,7 +299,6 @@ static struct i2c_driver mpu6050_driver = {
 		.name   = SLAVE_DEVICE_NAME,
 	},
 	.probe = mpu6050_probe,
-	.remove = mpu6050_remove,
 	.id_table = mpu6050_id,
 };
 
@@ -315,58 +307,67 @@ static struct i2c_driver mpu6050_driver = {
 static int __init sensor_driver_init(void)
 {
 
-	int ret = -1;
-
 	/*Allocates a range of character device numbers.
-	 * - Major number is allocated dynamically 
-	 * - Minor number is returned with first minor number(requested).*/
+	 * - Major number is allocated dynamically
+	 * - Minor number is returned with first minor number(requested).
+	 */
 
-	ret = alloc_chrdev_region(&dev, 0, NUM_DEVICES, DEVICE_NAME);
-	if(ret < 0){
-		printk(KERN_ERR "CHAR DEV ALLOCATION FAILED %d\n", ret);
-		return -1;
+	if (alloc_chrdev_region(&dev, 0, NUM_DEVICES, DEVICE_NAME) < 0) {
+		pr_info("CHAR DEV ALLOCATION FAILED %d\n", FAILURE);
+		return FAILURE;
 	}
 
-	/*Creating cdev structure*/
+	/* Creating cdev structure & Initializing the sturct with struct class and file operations */
 
-	cdev_init(&sensor_dev,&fops);
+	cdev_init(&sensor_dev, &fops);
+	if (!sensor_dev.ops)
+		pr_err("Character driver initialization failed\n");
 
 	/*Adding character device to the system*/
-	if((cdev_add(&sensor_dev,dev,1)) < 0){
+	if (cdev_add(&sensor_dev, dev, 1) < 0) {
 		pr_err("Cannot add the device to the system\n");
 		goto r_del;
 	}
 
 	/*Creating struct class*/
-	if(IS_ERR(sensor_class = class_create(DEVICE_NAME))){
+	sensor_class = class_create(DEVICE_NAME);
+	if (IS_ERR(sensor_class)) {
 		pr_err("Cannot create the struct class\n");
 		goto r_class;
 	}
 
-	/*Creating device
-	 * _create() - Creates the dev and registers it sysfs*/
-	if(IS_ERR(device_create(sensor_class,NULL,dev,NULL,DEVICE_NAME))){
-		pr_err( "Cannot create the Device \n");
+	/* Creating device
+	 * _create() - Creates the dev and registers it sysfsI
+	 * IS_ERR() - Converts the const void * to an integer value
+	 */
+	if (IS_ERR(device_create(sensor_class, NULL, dev, NULL, DEVICE_NAME))) {
+		pr_err("Cannot create the Device\n");
 		goto r_device;
 	}
 
-	kobj_ref = kobject_create_and_add("SENSOR_SYSFS",kernel_kobj);
+	kobj_ref = kobject_create_and_add("SENSOR_SYSFS", kernel_kobj);
+	if (kobj_ref == NULL) {
+		pr_err("kernel Object Creation failed\n");
+		kobject_put(kobj_ref);
+		return FAILURE;
+	}
 
 	/*Creating sysfs file for etx_value*/
 
-	if(sysfs_create_file(kobj_ref,&etx_attr.attr)){
+	if (sysfs_create_file(kobj_ref, &etx_attr.attr)) {
 		pr_err("Cannot create sysfs file\n");
 		goto r_sysfs;
 	}
 
 	pd_entry = proc_create(PROCFS_NAME, 0, NULL, &proc_fops);
 
-	if(pd_entry == NULL) {
+	if (pd_entry == NULL) {
 		remove_proc_entry(PROCFS_NAME, NULL);
-		printk(KERN_ERR "Could not initialize /proc/%s\n", PROCFS_NAME);
+		pr_info("Could not initialize /proc/%s\n", PROCFS_NAME);
 		return -ENOMEM;
 	}
-	// The adapter structure is used to identify a physical i2c bus 
+
+	//The adapter structure is used to identify a physical i2c bus
 	mpu6050_adapter = i2c_get_adapter(I2C_BUS_AVAILABLE);
 
 	if (mpu6050_adapter != NULL) {
@@ -374,30 +375,32 @@ static int __init sensor_driver_init(void)
 		mpu6050_sensor = i2c_new_client_device(mpu6050_adapter, &I2C_MPU6050);
 		if (mpu6050_sensor != NULL) {
 			/* _driver Structure is added to i2c subsystem */
-			i2c_add_driver(&mpu6050_driver);
-			ret = 0;
+			if (i2c_add_driver(&mpu6050_driver) < 0) {
+				pr_err("Unable to add driver\n");
+				i2c_unregister_device(mpu6050_sensor);
+				return FAILURE;
+			}
 		}
 		i2c_put_adapter(mpu6050_adapter);
 	}
-	printk(KERN_DEBUG "Adapter timeout: %d Adapter retries : %d Adapter bus number: %d\n",mpu6050_adapter->timeout,
-			mpu6050_adapter->retries,mpu6050_adapter->nr);
+
+	pr_info("Adapter timeout: %d Adapter retries : %d Adapter bus number: %d\n", mpu6050_adapter->timeout,
+			mpu6050_adapter->retries, mpu6050_adapter->nr);
 
 	pr_info("Driver Added\n");
 
-	return ret;
+	return SUCCESS;
 
 r_sysfs:
-	kobject_put(kobj_ref); 
+	kobject_put(kobj_ref);
 	sysfs_remove_file(kernel_kobj, &etx_attr.attr);
 r_device:
-	device_destroy(sensor_class,dev);
+	device_destroy(sensor_class, dev);
 r_class:
 	class_destroy(sensor_class);
 r_del:
 	cdev_del(&sensor_dev);
-	
-	ret = -1;
-	return ret;
+	return FAILURE;
 }
 
 /* Module Exit function */
@@ -407,13 +410,13 @@ static void __exit sensor_driver_exit(void)
 	i2c_del_driver(&mpu6050_driver);
 
 	gpio_free(GPIO_25);
-	free_irq(irqnum, NULL);
-	flush_work(&mpu_work);
+	free_irq(Irq_Num, NULL);
+	flush_work(&mpu6050_work);
 
-	kobject_put(kobj_ref); 
+	kobject_put(kobj_ref);
 	sysfs_remove_file(kernel_kobj, &etx_attr.attr);
 	remove_proc_entry(PROCFS_NAME, NULL);
-	device_destroy(sensor_class,dev);
+	device_destroy(sensor_class, dev);
 	class_destroy(sensor_class);
 	cdev_del(&sensor_dev);
 	unregister_chrdev_region(dev, NUM_DEVICES);
@@ -424,47 +427,31 @@ static void __exit sensor_driver_exit(void)
 static int chardev_open(struct inode *inode, struct file *file)
 {
 	pr_info("Device File open\n");
-	return 0;
+	return SUCCESS;
 }
 
 static int chardev_close(struct inode *inode, struct file *file)
 {
-	printk(KERN_DEBUG "%s Device Released\n", DEVICE_NAME);
-	return 0;
+	pr_info("%s Device Released\n", DEVICE_NAME);
+	return SUCCESS;
 }
 
-
-static ssize_t chardev_read(struct file* filp,char __user* buffer,size_t length,loff_t* offset)
-{
-	int bytes_read = 0;
-	return bytes_read;
-}
-
-static ssize_t chardev_write(struct file *filp, const char *buff, size_t len,loff_t * off)
+static long Sensor_Ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 
-	printk(KERN_ALERT "Sorry, this operation isn't supported.\n");
-	return -EINVAL;
-}
+	s16 accel[3] = {0};
 
-static long SENSOR_IOCTL(struct file *file, unsigned int cmd, unsigned long arg)
-{
-
-	s16 accel[3];
-
-	accel[0] = ACCEL_READ(mpu6050_sensor,X_ACC_H);
-	accel[1] = ACCEL_READ(mpu6050_sensor,Y_ACC_H);
-	accel[2] = ACCEL_READ(mpu6050_sensor,Z_ACC_H);
+	accel[0] = Mpu6050_Read(mpu6050_sensor, X_ACC);
+	accel[1] = Mpu6050_Read(mpu6050_sensor, Y_ACC);
+	accel[2] = Mpu6050_Read(mpu6050_sensor, Z_ACC);
 
 	pr_info("IOCTL FUNCTION CALLED\n");
-	for(int i = 0; i < 3; i++){
+	for (int i = 0; i < 3; i++) {
 		value[i] = accel[i];
-		if(copy_to_user((int32_t*) arg, &value, sizeof(value)) != 0) {
-			printk(KERN_ERR "Writing data to user failed\n");
-		}
+		if (copy_to_user((int32_t *) arg, &value, sizeof(value)) != 0)
+			pr_info("Writing data to user failed\n");
 	}
-
-	return 0;
+	return SUCCESS;
 }
 
 module_init(sensor_driver_init);
@@ -474,4 +461,3 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Devashree Katarkar");
 MODULE_DESCRIPTION("I2C Driver for ACCELEROMETER SENSOR");
 MODULE_VERSION("1.34");
-
